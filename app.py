@@ -1,6 +1,7 @@
 import os
 import uuid
 import sqlite3
+from datetime import datetime, timezone
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from signals.llm_signal import get_llm_score
@@ -37,24 +38,28 @@ def init_db():
     conn.close()
 
 
-def map_label(attribution: str, confidence: float) -> str:
+def classify(confidence: float) -> tuple[str, str]:
+    """Maps a confidence score to (attribution, label) per the spec thresholds."""
     pct = int(confidence * 100)
-    if attribution == "AI":
+    if confidence >= 0.75:
         return (
+            "AI",
             f"⚠️ AI-Generated Content — Our system is highly confident ({pct}%) "
             "this content was AI-generated. If you are the creator and believe "
-            "this is incorrect, you can submit an appeal."
+            "this is incorrect, you can submit an appeal.",
         )
-    if attribution == "UNCERTAIN":
+    if confidence >= 0.45:
         return (
+            "UNCERTAIN",
             f"? Attribution Unclear — Our system cannot confidently determine "
             f"whether this content is human- or AI-written (confidence: {pct}%). "
-            "The creator may appeal if they believe the classification is inaccurate."
+            "The creator may appeal if they believe the classification is inaccurate.",
         )
     return (
+        "HUMAN",
         f"✓ Likely Human-Written — Our analysis suggests this content was written "
         f"by a person ({pct}% confidence). Attribution signals indicate authentic "
-        "human authorship."
+        "human authorship.",
     )
 
 
@@ -77,14 +82,7 @@ def submit():
         (LLM_WEIGHT * llm_score) + (STYLOMETRIC_WEIGHT * stylometric_score), 4
     )
 
-    if confidence >= 0.75:
-        attribution = "AI"
-    elif confidence >= 0.45:
-        attribution = "UNCERTAIN"
-    else:
-        attribution = "HUMAN"
-
-    label = map_label(attribution, confidence)
+    attribution, label = classify(confidence)
     content_id = str(uuid.uuid4())
 
     conn = sqlite3.connect(DB_PATH)
@@ -113,8 +111,42 @@ def submit():
 
 @app.route("/appeal", methods=["POST"])
 def appeal():
-    # M5: update audit_log status to 'under_review', append reasoning + timestamp
-    pass
+    data = request.get_json(silent=True) or {}
+    content_id = (data.get("content_id") or "").strip()
+    creator_reasoning = (data.get("creator_reasoning") or "").strip()
+
+    if not content_id or not creator_reasoning:
+        return jsonify({"error": "content_id and creator_reasoning are required"}), 400
+
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute(
+        "SELECT status FROM audit_log WHERE content_id = ?", (content_id,)
+    ).fetchone()
+
+    if row is None:
+        conn.close()
+        return jsonify({"error": "content_id not found"}), 404
+
+    if row[0] != "classified":
+        conn.close()
+        return jsonify({"error": f"entry is already '{row[0]}' and cannot be appealed"}), 409
+
+    timestamp = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        """UPDATE audit_log
+           SET status = 'under_review',
+               appeal_reasoning = ?,
+               appeal_timestamp = ?
+           WHERE content_id = ?""",
+        (creator_reasoning, timestamp, content_id),
+    )
+    conn.commit()
+    conn.close()
+
+    return jsonify({
+        "status": "success",
+        "message": f"Appeal received. Entry {content_id} is now under_review.",
+    })
 
 
 def get_log() -> list[dict]:
