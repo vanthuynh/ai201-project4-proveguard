@@ -3,6 +3,8 @@ import uuid
 import sqlite3
 from datetime import datetime, timezone
 from flask import Flask, request, jsonify
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from dotenv import load_dotenv
 from signals.llm_signal import get_llm_score
 from signals.stylometric_signal import get_stylometric_score
@@ -10,6 +12,7 @@ from signals.stylometric_signal import get_stylometric_score
 load_dotenv()
 
 app = Flask(__name__)
+limiter = Limiter(get_remote_address, app=app, storage_uri="memory://")
 DB_PATH = "audit_log.db"
 
 LLM_WEIGHT = 0.65
@@ -64,6 +67,7 @@ def classify(confidence: float) -> tuple[str, str]:
 
 
 @app.route("/submit", methods=["POST"])
+@limiter.limit("10 per minute;100 per day")
 def submit():
     data = request.get_json(silent=True) or {}
     text = (data.get("text") or "").strip()
