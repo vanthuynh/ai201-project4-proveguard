@@ -4,6 +4,7 @@ import sqlite3
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from signals.llm_signal import get_llm_score
+from signals.stylometric_signal import get_stylometric_score
 
 load_dotenv()
 
@@ -69,8 +70,8 @@ def submit():
     # Signal 1: LLM holistic classifier
     llm_score = get_llm_score(text)
 
-    # Signal 2: Stylometric heuristics (wired in M4)
-    stylometric_score = 0.0
+    # Signal 2: Stylometric heuristics
+    stylometric_score = get_stylometric_score(text)
 
     confidence = round(
         (LLM_WEIGHT * llm_score) + (STYLOMETRIC_WEIGHT * stylometric_score), 4
@@ -116,10 +117,24 @@ def appeal():
     pass
 
 
+def get_log() -> list[dict]:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        """SELECT content_id, creator_id, llm_score, stylometric_score,
+                  confidence, attribution, label, status,
+                  appeal_reasoning, appeal_timestamp, created_at
+           FROM audit_log
+           ORDER BY created_at DESC
+           LIMIT 50"""
+    ).fetchall()
+    conn.close()
+    return [dict(row) for row in rows]
+
+
 @app.route("/log", methods=["GET"])
 def log():
-    # M5: return last 50 'under_review' entries for human review
-    pass
+    return jsonify({"entries": get_log()})
 
 
 if __name__ == "__main__":
